@@ -63,8 +63,9 @@ create trigger tour_packages_touch before update on public.tour_packages
   for each row execute function public.touch_updated_at();
 
 -- ------------------------------------------------------------
--- Row Level Security: every signed-in staff member shares all data.
--- (Anonymous visitors can neither read nor write anything.)
+-- Row Level Security: Admin (configured email) has full access.
+-- Staff (all other authenticated users) have READ-ONLY access to invoices,
+-- packages, and company settings. They CANNOT create/edit/delete.
 -- ------------------------------------------------------------
 alter table public.company_settings  enable row level security;
 alter table public.invoices          enable row level security;
@@ -75,15 +76,43 @@ drop policy if exists "staff_company"  on public.company_settings;
 drop policy if exists "staff_invoices" on public.invoices;
 drop policy if exists "staff_packages" on public.tour_packages;
 drop policy if exists "staff_deletions" on public.invoice_deletions;
+drop policy if exists "admin_all"      on public.company_settings;
+drop policy if exists "admin_all"      on public.invoices;
+drop policy if exists "admin_all"      on public.tour_packages;
+drop policy if exists "admin_all"      on public.invoice_deletions;
 
-create policy "staff_company"  on public.company_settings
-  for all to authenticated using (true) with check (true);
-create policy "staff_invoices" on public.invoices
-  for all to authenticated using (true) with check (true);
-create policy "staff_packages" on public.tour_packages
-  for all to authenticated using (true) with check (true);
-create policy "staff_deletions" on public.invoice_deletions
-  for all to authenticated using (true) with check (true);
+-- STAFF: Read-only access to everything
+create policy "staff_company_read"  on public.company_settings
+  for select to authenticated using (true);
+create policy "staff_invoices_read" on public.invoices
+  for select to authenticated using (true);
+create policy "staff_packages_read" on public.tour_packages
+  for select to authenticated using (true);
+create policy "staff_deletions_read" on public.invoice_deletions
+  for select to authenticated using (true);
+
+-- ADMIN: Full access (INSERT, UPDATE, DELETE) — uses email check
+-- Replace 'admin@lalitpurholidays.com' with your actual admin email(s)
+-- You can add multiple emails: auth.jwt() ->> 'email' IN ('admin1@...', 'admin2@...')
+create policy "admin_company_all" on public.company_settings
+  for all to authenticated
+  using (auth.jwt() ->> 'email' IN ('admin@lalitpurholidays.com'))
+  with check (auth.jwt() ->> 'email' IN ('admin@lalitpurholidays.com'));
+
+create policy "admin_invoices_all" on public.invoices
+  for all to authenticated
+  using (auth.jwt() ->> 'email' IN ('admin@lalitpurholidays.com'))
+  with check (auth.jwt() ->> 'email' IN ('admin@lalitpurholidays.com'));
+
+create policy "admin_packages_all" on public.tour_packages
+  for all to authenticated
+  using (auth.jwt() ->> 'email' IN ('admin@lalitpurholidays.com'))
+  with check (auth.jwt() ->> 'email' IN ('admin@lalitpurholidays.com'));
+
+create policy "admin_deletions_all" on public.invoice_deletions
+  for all to authenticated
+  using (auth.jwt() ->> 'email' IN ('admin@lalitpurholidays.com'))
+  with check (auth.jwt() ->> 'email' IN ('admin@lalitpurholidays.com'));
 
 -- optional helper: invoices by year (for future reporting)
 create index if not exists invoices_number_idx on public.invoices (number);

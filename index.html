@@ -1523,6 +1523,7 @@ function queueCompanySave() {   // debounce: company fields auto-persist as you 
    7. SAVE / HISTORY / DUPLICATE / DELETE
    ============================================================ */
 function saveCurrentInvoice() {
+  if (!isAdmin()) { toast('Admin only: Save invoices.', 'warn'); return; }
   if (!validate()) return;
   state.savedAt = new Date().toISOString();
   state.updatedAt = state.savedAt;
@@ -1657,6 +1658,7 @@ function savePackages(list) {
 
 function renderPackages() {
   const list = loadPackages();
+  const admin = isAdmin();
   $('packagesList').innerHTML = list.length ? list.map(p => {
     const dates = String(p.dates || '').split(',').map(s => s.trim()).filter(Boolean)
       .map(d => '<span class="pkg-date">' + esc(/^\d{4}-\d{2}-\d{2}$/.test(d) ? fmtDate(d) : d) + '</span>')
@@ -1680,10 +1682,12 @@ function renderPackages() {
         : '') +
       '<div class="pkg-actions">' +
         '<button type="button" class="mini-btn add" data-pkg="' + p.id + '" data-act="add">+ Add to invoice</button>' +
-        '<button type="button" class="mini-btn" data-pkg="' + p.id + '" data-act="edit">Edit</button>' +
-        '<button type="button" class="mini-btn danger" data-pkg="' + p.id + '" data-act="del">Delete</button>' +
+        (admin ? '<button type="button" class="mini-btn" data-pkg="' + p.id + '" data-act="edit">Edit</button>' +
+               '<button type="button" class="mini-btn danger" data-pkg="' + p.id + '" data-act="del">Delete</button>' : '') +
       '</div></div>';
-  }).join('') : '<div class="hist-empty">No packages yet — click “+ New Package”.</div>';
+  }).join('') : '<div class="hist-empty">' + (admin ? 'No packages yet — click “+ New Package”.' : 'No packages available.') + '</div>';
+  // Hide New Package button for staff
+  $('btnNewPackage').style.display = admin ? 'inline-flex' : 'none';
 }
 
 function openPkgEditor(pkg) {
@@ -2114,6 +2118,7 @@ function recordLocalDelete(id) {
 async function fullSync() {
   if (!cloudOn()) return;
   setCloudStatus('busy');
+  const admin = isAdmin();
   try {
     const c = CLOUD.client;
     const [inv, del, comp, pkg] = await Promise.all([
@@ -2128,7 +2133,7 @@ async function fullSync() {
     const serverDel = (del.data || []).map(r => r.id);
     const localDel = loadDeletedIds();
     const missing = localDel.filter(id => !serverDel.includes(id));
-    if (missing.length) {
+    if (missing.length && admin) {  // only admin pushes deletion tombstones
       const { error } = await c.from('invoice_deletions')
         .upsert(missing.map(id => ({ id })));
       if (error) throw error;
@@ -2145,31 +2150,34 @@ async function fullSync() {
       const cur = merged.get(r.id);
       if (!cur || (cur.updatedAt || '') <= (server.updatedAt || '')) merged.set(r.id, server);
     });
-    const serverById = new Map((inv.data || []).map(r => [r.id, r]));
-    const toPush = [...merged.values()].filter(i => {
-      if (!i.savedAt) return false;                    // drafts stay local until saved
-      const sr = serverById.get(i.id);
-      return !sr || (i.updatedAt || '') > (sr.updated_at || '');
-    });
-    if (toPush.length) {
-      const { error } = await c.from('invoices').upsert(toPush.map(invoiceRow));
-      if (error) throw error;
+    // Admin: push local changes that are newer than server
+    if (admin) {
+      const serverById = new Map((inv.data || []).map(r => [r.id, r]));
+      const toPush = [...merged.values()].filter(i => {
+        if (!i.savedAt) return false;                    // drafts stay local until saved
+        const sr = serverById.get(i.id);
+        return !sr || (i.updatedAt || '') > (sr.updated_at || '');
+      });
+      if (toPush.length) {
+        const { error } = await c.from('invoices').upsert(toPush.map(invoiceRow));
+        if (error) throw error;
+      }
     }
     saveInvoices([...merged.values()]);
 
-    /* company profile: server wins once it exists; first run seeds it */
+    /* company profile: server wins once it exists; first run seeds it (admin only) */
     if (comp.data && comp.data.data) {
       saveCompany({ ...DEFAULT_COMPANY, ...comp.data.data });
       state.company = loadCompany();
-    } else if (!localStorage.getItem(LS_SYNC_FLAG)) {
+    } else if (!localStorage.getItem(LS_SYNC_FLAG) && admin) {
       const { error } = await c.from('company_settings').upsert({ id: 1, data: loadCompany() });
       if (error) throw error;
     }
 
-    /* packages: server wins once populated; first run seeds them */
+    /* packages: server wins once populated; first run seeds them (admin only) */
     if ((pkg.data || []).length) {
       savePackages(pkg.data.map(rowToPkg));
-    } else if (!localStorage.getItem(LS_SYNC_FLAG) && loadPackages().length) {
+    } else if (!localStorage.getItem(LS_SYNC_FLAG) && admin && loadPackages().length) {
       const { error } = await c.from('tour_packages').upsert(loadPackages().map(pkgToRow));
       if (error) throw error;
     }
@@ -2186,7 +2194,7 @@ async function fullSync() {
 
 /* ---- write-through helpers (used on save/delete while signed in) ---- */
 async function cloudPushInvoice(inv) {
-  if (!cloudOn()) return;
+  if (!cloudOn() || !isAdmin()) return;
   setCloudStatus('busy');
   try {
     const { error } = await CLOUD.client.from('invoices').upsert([invoiceRow(inv)]);
@@ -2198,7 +2206,7 @@ async function cloudPushInvoice(inv) {
   }
 }
 async function cloudPushCompany() {
-  if (!cloudOn()) return;
+  if (!cloudOn() || !isAdmin()) return;
   try {
     const { error } = await CLOUD.client.from('company_settings')
       .upsert({ id: 1, data: loadCompany() });
@@ -2206,7 +2214,7 @@ async function cloudPushCompany() {
   } catch (e) { console.error(e); setCloudStatus('err'); }
 }
 async function cloudPushPackages() {
-  if (!cloudOn()) return;
+  if (!cloudOn() || !isAdmin()) return;
   setCloudStatus('busy');
   try {
     const list = loadPackages();
@@ -2221,7 +2229,7 @@ async function cloudPushPackages() {
   } catch (e) { console.error(e); setCloudStatus('err'); }
 }
 async function cloudDeleteInvoice(id) {
-  if (!cloudOn()) return;
+  if (!cloudOn() || !isAdmin()) return;
   try {
     await CLOUD.client.from('invoice_deletions').upsert({ id });
     await CLOUD.client.from('invoices').delete().eq('id', id);
@@ -2350,7 +2358,20 @@ function bindEvents() {
   });
 
   /* toolbar */
-  $('btnSave').addEventListener('click', saveCurrentInvoice);
+  function checkAdminOrWarn(action) {
+    if (!isAdmin()) { toast('Admin only: ' + action, 'warn'); return false; }
+    return true;
+  }
+  $('btnSave').addEventListener('click', () => { if (checkAdminOrWarn('Save invoice')) saveCurrentInvoice(); });
+  $('btnNew').addEventListener('click', () => {
+    if (!checkAdminOrWarn('Create invoice')) return;
+    if (dirty && !confirm('Start a new invoice? Unsaved changes to the current one will be lost.')) return;
+    const hadInvoices = loadInvoices().length > 0;
+    state = newInvoiceState(!hadInvoices && !localStorage.getItem(LS_COMPANY));
+    dirty = false;
+    fillForm(); renderPreview();
+    toast('New invoice started.');
+  });
   $('btnPrint').addEventListener('click', () => {
     if (!state.savedAt) { toast('Save the invoice first before printing.', 'warn'); return; }
     window.print();
@@ -2358,6 +2379,12 @@ function bindEvents() {
   $('btnPdf').addEventListener('click', () => {
     if (!state.savedAt) { toast('Save the invoice first before exporting PDF.', 'warn'); return; }
     exportPDF();
+  });
+  $('btnPackages').addEventListener('click', () => {
+    if (!isAdmin()) { toast('Admin only: Manage packages.', 'warn'); return; }
+    $('pkgEditor').classList.remove('open');
+    renderPackages();
+    $('packagesModal').classList.add('open');
   });
 
   /* The browser's print header/footer prints the page TITLE and date.
@@ -2394,9 +2421,9 @@ function bindEvents() {
     fillForm(); renderPreview();
     toast('First item qty set to ' + total + ' (Adults ' + adults + ' + Children ' + children + ')');
   });
-  $('btnExport').addEventListener('click', exportBackup);
+  $('btnExport').addEventListener('click', () => { if (isAdmin() || confirm('Export your local data?')) exportBackup(); });
   $('btnPng').addEventListener('click', exportPNG);
-  $('btnImport').addEventListener('click', () => $('importFile').click());
+  $('btnImport').addEventListener('click', () => { if (isAdmin()) $('importFile').click(); else toast('Admin only: Import backup.', 'warn'); });
   $('importFile').addEventListener('change', e => {
     if (e.target.files[0]) importBackup(e.target.files[0]);
     e.target.value = '';
@@ -2422,7 +2449,7 @@ function bindEvents() {
   });
   $('packagesClose').addEventListener('click', closePackages);
   $('packagesModal').addEventListener('click', e => { if (e.target === $('packagesModal')) closePackages(); });
-  $('btnNewPackage').addEventListener('click', () => openPkgEditor(null));
+  $('btnNewPackage').addEventListener('click', () => { if (isAdmin()) openPkgEditor(null); else toast('Admin only: Create packages.', 'warn'); });
   $('pkgCancel').addEventListener('click', () => $('pkgEditor').classList.remove('open'));
   $('pkgSave').addEventListener('click', savePkgEditor);
   $('packagesList').addEventListener('click', e => {
@@ -2434,13 +2461,18 @@ function bindEvents() {
       const occ = document.querySelector('.pkg-occ[data-occ="' + pkg.id + '"]');
       addPackageToInvoice(pkg, occ ? occ.value : 'sharing');
     }
-    else if (btn.dataset.act === 'edit') openPkgEditor(pkg);
-    else if (btn.dataset.act === 'del' &&
-        confirm('Delete package “' + pkg.name + '”?')) {
-      savePackages(loadPackages().filter(p => p.id !== pkg.id));
-      cloudPushPackages();
-      renderPackages();
-      toast('Package deleted.');
+    else if (btn.dataset.act === 'edit') {
+      if (!isAdmin()) { toast('Admin only: Edit packages.', 'warn'); return; }
+      openPkgEditor(pkg);
+    }
+    else if (btn.dataset.act === 'del') {
+      if (!isAdmin()) { toast('Admin only: Delete packages.', 'warn'); return; }
+      if (confirm('Delete package “' + pkg.name + '”?')) {
+        savePackages(loadPackages().filter(p => p.id !== pkg.id));
+        cloudPushPackages();
+        renderPackages();
+        toast('Package deleted.');
+      }
     }
   });
 
