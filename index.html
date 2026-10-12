@@ -1057,11 +1057,17 @@ const $ = id => document.getElementById(id);
 const clone = o => JSON.parse(JSON.stringify(o));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
-/** Admin check: admin can manage company settings and delete saved invoices.
-    Configure admin emails in the ADMIN_EMAILS array below. */
+/** Admin check: admin can manage company settings, delete invoices, manage packages.
+    Staff can create/save invoices. Configure admin emails in ADMIN_EMAILS below. */
 const ADMIN_EMAILS = ['admin@lalitpurholidays.com']; // Add admin emails here
 function isAdmin() {
   return CLOUD.user && ADMIN_EMAILS.includes(CLOUD.user.email);
+}
+function isStaff() {
+  return CLOUD.user && !isAdmin(); // signed in but not admin
+}
+function canWrite() {
+  return isAdmin() || isStaff(); // both admin and staff can create/save invoices
 }
 
 function blankItem() { return { desc: '', unit: 'person', qty: 1, price: 0 }; }
@@ -1523,7 +1529,7 @@ function queueCompanySave() {   // debounce: company fields auto-persist as you 
    7. SAVE / HISTORY / DUPLICATE / DELETE
    ============================================================ */
 function saveCurrentInvoice() {
-  if (!isAdmin()) { toast('Admin only: Save invoices.', 'warn'); return; }
+  if (!canWrite()) { toast('Sign in to save invoices.', 'warn'); return; }
   if (!validate()) return;
   state.savedAt = new Date().toISOString();
   state.updatedAt = state.savedAt;
@@ -2194,7 +2200,7 @@ async function fullSync() {
 
 /* ---- write-through helpers (used on save/delete while signed in) ---- */
 async function cloudPushInvoice(inv) {
-  if (!cloudOn() || !isAdmin()) return;
+  if (!cloudOn() || !canWrite()) return;
   setCloudStatus('busy');
   try {
     const { error } = await CLOUD.client.from('invoices').upsert([invoiceRow(inv)]);
@@ -2358,13 +2364,17 @@ function bindEvents() {
   });
 
   /* toolbar */
+  function checkCanWriteOrWarn(action) {
+    if (!canWrite()) { toast('Sign in to ' + action.toLowerCase() + '.', 'warn'); return false; }
+    return true;
+  }
   function checkAdminOrWarn(action) {
     if (!isAdmin()) { toast('Admin only: ' + action, 'warn'); return false; }
     return true;
   }
-  $('btnSave').addEventListener('click', () => { if (checkAdminOrWarn('Save invoice')) saveCurrentInvoice(); });
+  $('btnSave').addEventListener('click', () => { if (checkCanWriteOrWarn('Save invoice')) saveCurrentInvoice(); });
   $('btnNew').addEventListener('click', () => {
-    if (!checkAdminOrWarn('Create invoice')) return;
+    if (!checkCanWriteOrWarn('Create invoice')) return;
     if (dirty && !confirm('Start a new invoice? Unsaved changes to the current one will be lost.')) return;
     const hadInvoices = loadInvoices().length > 0;
     state = newInvoiceState(!hadInvoices && !localStorage.getItem(LS_COMPANY));
